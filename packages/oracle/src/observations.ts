@@ -19,7 +19,10 @@ function obsId(source: string): string {
  */
 export function gameResultObservation(result: GameResult, ts: number): Observation {
   const base = result.win ? 0.30 : -0.30
-  const marginFactor = Math.tanh(result.margin / 28)    // saturates at ~±2 TDs
+  // tanhSaturationPoint: 32 (calibrated from 28) — margin was saturating slightly
+  // too early. At 28: a 28-pt win = tanh(1.0) = 0.762; a 42-pt win = tanh(1.5) = 0.905.
+  // At 32: a 32-pt win = tanh(1.0) = 0.762; spread is more gradual, less cliff-like.
+  const marginFactor = Math.tanh(result.margin / 32)    // saturates at ~±2 TDs
   const efficiencyFactor =
     (result.thirdDownPct - 0.38) * 0.5 + (result.redZonePct - 0.55) * 0.3
   const stsBonus = result.specialTeamsScore * 0.01
@@ -62,9 +65,10 @@ export function gameResultObservation(result: GameResult, ts: number): Observati
   // Confidence: limited so the prior (S) carries real weight vs any single game.
   const confidence = Math.min(0.80, 0.58 + Math.abs(marginFactor) * 0.10 + Math.abs(result.opponentStrength) * 0.05)
 
-  // noiseVariance raised vs earlier version → lower Kalman gain → S moves less per game.
-  // This is intentional: one game is weak evidence; the full season is strong evidence.
-  const noiseVariance = result.primetime ? 0.30 : 0.42
+  // noiseVariance: 0.52/0.38 (calibrated from 0.42/0.30) — NFL games are noisier than
+  // the initial estimate. Higher R → lower Kalman gain → better single-game resistance.
+  // Primetime gets a modest discount (higher-quality competition context).
+  const noiseVariance = result.primetime ? 0.38 : 0.52
 
   return {
     id: obsId('game_result'),

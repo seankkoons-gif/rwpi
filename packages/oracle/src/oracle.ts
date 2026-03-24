@@ -16,11 +16,14 @@ export const GIANTS_CONFIG: OracleConfig = {
   launchPrice: 100.0,
   launchS: -0.15,
   launchV: 0.6,
-  alpha: 0.30,
+  // alpha: 0.35 (calibrated from 0.30) — S is better shaped post-calibration;
+  // price should respond proportionally more to latent-strength changes.
+  alpha: 0.35,
   beta: 0.40,
-  // Higher process noise keeps V from collapsing; allows S to respond to
-  // sustained poor performance over a full season (0.015/day = ~0.10/week)
-  processNoise: 0.005,
+  // processNoise: 0.002 (calibrated from 0.005) — original was expanding V too
+  // aggressively between games. At 0.002/day: ~0.014/week, ~0.06/offseason-month.
+  // V still widens meaningfully over an offseason; just doesn't sprint.
+  processNoise: 0.002,
   maxPriceMultiple: 6.0,
   minPriceMultiple: 0.05,
   markBandPct: 0.08,
