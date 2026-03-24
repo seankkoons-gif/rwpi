@@ -41,6 +41,9 @@
 
 import { GIANTS_CONFIG, calcFairPrice, applyObservations, applyOffseasonTransition } from './oracle.ts'
 import { gameResultObservation, injuryObservation } from './observations.ts'
+import { calcRiskRegime } from './market-engine.ts'
+import { advanceVRisk, getNewPositionV, smoothingProfile } from './risk/covariance-smoother.ts'
+import { compareSmoothing } from './risk/risk-engine.ts'
 import type { GameResult, InjuryReport } from '../../shared/src/types.ts'
 
 // ─── Infrastructure ──────────────────────────────────────────────────────────
@@ -446,6 +449,180 @@ console.log('──────────────────────�
   }, {
     measuredSensitivity: { min: 0.30, max: 0.42, label: 'exp(0.30) − 1 ≈ 34.99% per unit of S' },
   }, 'Price transform math is internally consistent')
+}
+
+// ─── Suite 7: COVARIANCE SMOOTHING ───────────────────────────────────────────
+//
+// Tests that the two-variance-track risk layer behaves correctly:
+//  - V_risk starts at V_pre (smoothed) when game ends
+//  - V_risk converges toward V_model over time
+//  - Leverage jumps are reduced for existing positions
+//  - New positions under 'strict' policy get no free ride in the lag window
+//  - Full convergence occurs within ~3τ
+//  - No exploit: V_risk never BELOW V_model (only above, converging down)
+//
+// Design note (per architecture doc):
+//  "The filter can still compute the immediate target variance update.
+//   But the risk engine and liquidation-facing variance should move toward
+//   that target smoothly over a short window."
+//
+// V_risk formula: V_model + (V_pre - V_model) * exp(-t/τ)
+// This section tests all properties of this curve.
+console.log('\nSuite 7: COVARIANCE SMOOTHING TESTS')
+console.log('──────────────────────────────────────')
+
+{
+  const TAU = 90  // default production τ in minutes
+
+  // ─── COV-1: V_risk starts at V_pre immediately after game ─────────────────
+  {
+    // Blowout Eagles loss: V jumps from 0.12 (mid-season) to 0.08 (compressed)
+    // At t=0, V_risk should still be V_pre (no smoothing yet)
+    const V_pre = 0.12
+    const V_post = 0.08
+    const V_risk_t0 = advanceVRisk(V_post, V_pre, 0, TAU)
+    test('CovSmoothing', 'COV-1: V_risk = V_pre immediately at game end (t=0)', { V_risk_t0 }, {
+      V_risk_t0: { min: V_pre - 0.001, max: V_pre + 0.001, label: 'V_risk equals V_pre at t=0' },
+    }, 'Smoothing starts from the pregame variance, not the new compressed value')
+  }
+
+  // ─── COV-2: V_risk converges toward V_model over time ─────────────────────
+  {
+    const V_pre = 0.355   // offseason V (large)
+    const V_post = 0.12   // post-first-game V (compressed)
+    const V_t60 = advanceVRisk(V_post, V_pre, 60, TAU)
+    const V_t90 = advanceVRisk(V_post, V_pre, 90, TAU)
+    const V_t270 = advanceVRisk(V_post, V_pre, 270, TAU)
+    const pctComplete_t60 = (V_pre - V_t60) / (V_pre - V_post)
+    const pctComplete_t90 = (V_pre - V_t90) / (V_pre - V_post)
+    // At t=3τ, remaining fraction = exp(-3) = 0.0498 → ~95% converged.
+    // Absolute diff = 0.235 * 0.0498 = 0.0117 for this range. Use 0.02 tolerance.
+    const convergenceFraction = 1 - Math.abs(V_t270 - V_post) / (V_pre - V_post)
+    test('CovSmoothing', 'COV-2: V_risk converges monotonically toward V_model', {
+      pctComplete_t60, pctComplete_t90, convergenceFraction,
+    }, {
+      pctComplete_t60: { min: 0.46, max: 0.52, label: 'At t=τ×(2/3): ~49% converged (exp(-0.667)=0.514 remaining)' },
+      pctComplete_t90: { min: 0.62, max: 0.65, label: 'At t=τ: ~63.2% converged (exp(-1)=0.368 remaining)' },
+      convergenceFraction: { min: 0.93, label: 'At t=3τ: >93% converged (exp(-3)=0.0498 remaining)' },
+    }, 'Exponential decay formula: at τ=90min, 63% converged; at 3τ=270min, 95% converged')
+  }
+
+  // ─── COV-3: Smoothing prevents immediate leverage cap increase ────────────
+  {
+    // Postgame V compression: V 0.16→0.06 (elevated→calm regime).
+    // Without smoothing: leverage cap jumps from 10x→20x immediately.
+    // With smoothing: V_risk stays at 0.16 (elevated, 10x) — no immediate jump.
+    //
+    // The protection is for NEW POSITION OPENERS: smoothing prevents users from
+    // immediately taking 20x positions right after a game when the market is
+    // freshly settled. This avoids over-leveraging in the post-game window.
+    const V_pre = 0.16   // elevated regime pre-game (U=0.40, cap=10x)
+    const V_post = 0.06  // calm regime post-game (U=0.245, cap=20x)
+    const scenario = compareSmoothing('COV-3 test', V_pre, V_post, TAU)
+    // smooth_t0 should be STRICTER (lower cap) than instant (higher cap)
+    const smoothedStricter = scenario.smooth_t0.leverageCap <= scenario.instant.leverageCap ? 1 : 0
+    // smooth_t0 mm rate should be HIGHER (stricter) than instant mm rate
+    const smoothedHigherMm = scenario.smooth_t0.mmRate >= scenario.instant.mmRate ? 1 : 0
+    test('CovSmoothing', 'COV-3: Smoothing keeps stricter regime — prevents immediate leverage cap jump', {
+      instantCap: scenario.instant.leverageCap,
+      smoothedCap: scenario.smooth_t0.leverageCap,
+      smoothedStricter,
+      smoothedHigherMm,
+    }, {
+      instantCap:       { min: 15, label: 'Without smoothing: leverage cap jumped to 20x (calm regime)' },
+      smoothedCap:      { max: 12, label: 'With smoothing at t=0: cap stays at pre-game level (10x elevated)' },
+      smoothedStricter: { min: 1,  label: 'Smoothed regime is stricter (lower cap) than instant' },
+      smoothedHigherMm: { min: 1,  label: 'Smoothed maintenance margin ≥ instant (higher protection cost)' },
+    }, 'Covariance smoothing prevents new positions from immediately exploiting compressed V for max leverage')
+  }
+
+  // ─── COV-4: New position abuse prevention (strict policy) ─────────────────
+  {
+    // After a big blowout loss, V_model is compressed (lower uncertainty)
+    // V_risk is still elevated (smoothing lag)
+    // A new user trying to open positions should NOT get free optionality
+    // Under 'strict' policy: effective V = max(V_risk, V_model) = V_risk (the elevated one)
+    const V_model = 0.08   // post-game compressed state
+    const V_risk = 0.35    // still elevated at t=0 (smoothing in progress)
+    const V_strict = getNewPositionV(V_risk, V_model, 'strict')
+    const V_lenient = getNewPositionV(V_risk, V_model, 'smoothed')
+    test('CovSmoothing', 'COV-4: Strict policy — new positions see elevated V in smoothing window', {
+      V_strict, V_lenient, strictGeModel: V_strict >= V_model ? 1 : 0,
+    }, {
+      V_strict:    { min: V_risk - 0.001, max: V_risk + 0.001, label: 'Strict V = max(V_risk, V_model) = V_risk when V_risk > V_model' },
+      strictGeModel: { min: 1, label: 'Strict V ≥ V_model — new positions never get compressed V during smoothing window' },
+    }, 'Prevents: open large new position during smoothing lag when V_model is compressed but V_risk still elevated')
+  }
+
+  // ─── COV-5: Smoothing profile at τ=60/90/120 — stability comparison ───────
+  {
+    const V_pre = 0.355   // offseason state (large V)
+    const V_post = 0.12   // after first game
+
+    const V60_t90 = advanceVRisk(V_post, V_pre, 90, 60)    // τ=60min at t=90min
+    const V90_t90 = advanceVRisk(V_post, V_pre, 90, 90)    // τ=90min at t=90min
+    const V120_t90 = advanceVRisk(V_post, V_pre, 90, 120)  // τ=120min at t=90min
+
+    const pct60 = (V_pre - V60_t90) / (V_pre - V_post)     // fraction converged at t=90min
+    const pct90 = (V_pre - V90_t90) / (V_pre - V_post)
+    const pct120 = (V_pre - V120_t90) / (V_pre - V_post)
+
+    test('CovSmoothing', 'COV-5: τ=90min provides meaningful convergence by game+90min without over-lagging', {
+      pct60, pct90, pct120,
+      ordering: pct60 > pct90 && pct90 > pct120 ? 1 : 0,
+    }, {
+      pct90:    { min: 0.60, max: 0.70, label: 'At t=τ=90min: 63% converged (e^-1 ≈ 0.368 remaining)' },
+      pct60:    { min: 0.75, max: 0.85, label: 'τ=60min: faster (77% by t=90min)' },
+      pct120:   { min: 0.48, max: 0.55, label: 'τ=120min: slower (52% by t=90min) — acceptable for large swings' },
+      ordering: { min: 1, label: 'Shorter τ converges faster: τ60 > τ90 > τ120 at t=90min' },
+    }, 'τ=90min is the recommended default: meaningful protection without multi-hour lag')
+  }
+
+  // ─── COV-6: No exploit — V_risk never < V_model during downward compression ─
+  {
+    // When postgame V_model < V_pre (variance compressed by high-confidence observation),
+    // V_risk should always be ≥ V_model (i.e., smoothing provides EXTRA protection,
+    // never LESS than the belief state)
+    const V_pre = 0.25
+    const V_post = 0.08
+    const testTimes = [0, 30, 60, 90, 120, 180, 270]
+    const allAbove = testTimes.every(t => advanceVRisk(V_post, V_pre, t, TAU) >= V_post - 0.001)
+    test('CovSmoothing', 'COV-6: V_risk ≥ V_model at all times during downward variance compression', {
+      allAbove: allAbove ? 1 : 0,
+    }, {
+      allAbove: { min: 1, label: 'V_risk never drops below V_model (can only approach from above)' },
+    }, 'Smoothing only adds protection, never reduces it below the belief state')
+  }
+
+  // ─── COV-7: Giants W1 Eagles blowout — leverage cap jump delayed by smoothing ─
+  {
+    // W1 2025: Giants lose 10-34 to Eagles (primetime blowout).
+    // Pre-game V ≈ 0.55 (season-opening high uncertainty: stressed regime, 5x max).
+    // Post-game V ≈ 0.35 (first observation in: elevated regime, 10x max).
+    // Without smoothing: leverage cap JUMPS from 5x → 10x immediately after game.
+    // With smoothing: V_risk stays near 0.55 at t=0, ramps up slowly.
+    const V_pre = 0.55    // stressed regime: U=0.742, cap=5x
+    const V_post = 0.35   // elevated regime: U=0.592, cap=10x
+    const V_smooth_t0  = advanceVRisk(V_post, V_pre, 0,  TAU)  // = V_pre
+    const V_smooth_t90 = advanceVRisk(V_post, V_pre, 90, TAU)  // partially converged
+    const regime_instant = calcRiskRegime(Math.sqrt(V_post))
+    const regime_smooth  = calcRiskRegime(Math.sqrt(V_smooth_t0))
+    // smooth_t0 should keep STRICTER (lower/equal) cap than instant
+    const smoothKeptStricter = regime_smooth.leverageCap <= regime_instant.leverageCap ? 1 : 0
+    const v90AbovePost = V_smooth_t90 > V_post ? 1 : 0
+    const v90BelowPre  = V_smooth_t90 < V_pre  ? 1 : 0
+    test('CovSmoothing', 'COV-7: Giants W1 Eagles blowout — leverage cap jump delayed by smoothing', {
+      V_smooth_t0: +V_smooth_t0.toFixed(5),
+      V_smooth_t90: +V_smooth_t90.toFixed(5),
+      smoothKeptStricter, v90AbovePost, v90BelowPre,
+    }, {
+      V_smooth_t0:        { min: V_pre - 0.001, max: V_pre + 0.001, label: 'V_risk = V_pre at t=0' },
+      V_smooth_t90:       { min: V_post,        max: V_pre,         label: 'V_risk between V_post and V_pre at t=90min' },
+      smoothKeptStricter: { min: 1, label: 'Smoothed cap ≤ instant cap (stricter regime maintained)' },
+      v90AbovePost:       { min: 1, label: 'V_risk still above V_post at t=90min' },
+      v90BelowPre:        { min: 1, label: 'V_risk below V_pre at t=90min (converging)' },
+    }, 'After blowout loss, leverage cap jump from 5x→10x delayed — prevents immediate over-leveraging')
+  }
 }
 
 // ─── Results ──────────────────────────────────────────────────────────────────
