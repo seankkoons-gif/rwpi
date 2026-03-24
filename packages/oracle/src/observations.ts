@@ -19,34 +19,58 @@ function obsId(source: string): string {
  */
 export function gameResultObservation(result: GameResult, ts: number): Observation {
   const base = result.win ? 0.30 : -0.30
-  const marginFactor = Math.tanh(result.margin / 28)          // saturates at ~±2 TDs
+  const marginFactor = Math.tanh(result.margin / 28)    // saturates at ~±2 TDs
   const efficiencyFactor =
     (result.thirdDownPct - 0.38) * 0.5 + (result.redZonePct - 0.55) * 0.3
   const stsBonus = result.specialTeamsScore * 0.01
   const turnoverPenalty = result.turnovers * -0.025
   const sackBonus = result.sacks * 0.015
 
-  // Core signal scaled by opponent quality.
-  // Beating a weak team (opponentStrength = -0.40) → scale 0.30
-  // Beating a strong team (opponentStrength = +0.50) → scale 0.75
-  // Losing to a strong team is penalized more; losing to a weak team is penalized more.
+  // Opponent-quality scale: beating a weak team counts less; losing to elite counts more.
+  // Range: oppStrength=-0.40 → scale=0.30;  oppStrength=+0.50 → scale=0.75
   const opponentScale = Math.max(0.25, 0.5 + 0.5 * result.opponentStrength)
-  const coreSignal = base + 0.4 * marginFactor + 0.3 * efficiencyFactor + stsBonus
-  const rawStrength = coreSignal * opponentScale + turnoverPenalty + sackBonus
 
-  // Cap at ±0.80 so no single game dominates the state estimate
-  const observedStrength = Math.max(-0.80, Math.min(0.80, rawStrength))
+  // Garbage-time dampener: blowouts vs clearly weak opponents get a 0.75× haircut.
+  // Proxy: |margin|>21 AND opponent is below average.
+  // Prevents "dominated a bad team by 30" from registering as franchise-quality evidence.
+  const garbageDampen = (Math.abs(result.margin) > 21 && result.opponentStrength < -0.10) ? 0.75 : 1.0
 
-  // Confidence: lower than before to allow the prior (S) more weight vs individual games
-  const confidence = 0.60 + Math.abs(marginFactor) * 0.10 + Math.abs(result.opponentStrength) * 0.05
-  // Higher noiseVariance (0.30) → lower Kalman gain → S moves less per game
-  const noiseVariance = result.primetime ? 0.24 : 0.32
+  // Move turnovers and sacks INSIDE the opponent-scale/garbage-dampen envelope.
+  // Winning the TO battle against a bad team should not escape the opponent-quality discount.
+  const coreSignal = base + 0.4 * marginFactor + 0.3 * efficiencyFactor + stsBonus + turnoverPenalty + sackBonus
+
+  // For losses to strong opponents, add a quality-penalty multiplier:
+  //   losing badly to an elite team (opp=+0.50) gets 1.25× the loss signal.
+  //   losing to a weak team gets no bonus multiplier.
+  const eliteLossPenalty = (!result.win && result.opponentStrength > 0)
+    ? 1.0 + result.opponentStrength * 0.50
+    : 1.0
+
+  const scaledCore = coreSignal * opponentScale * garbageDampen * eliteLossPenalty
+
+  // Win ceiling: limits how much a win vs a weak opponent can push S.
+  // vs Panthers (opp=-0.40): ceiling = 0.22.  vs Eagles (opp=+0.50): ceiling = 0.67.
+  // Losses have a symmetric floor (can always fall to -0.80).
+  const oppAdjustedCap = result.win
+    ? Math.max(0.18, 0.42 + result.opponentStrength * 0.50)
+    : 0.80
+
+  const rawStrength = scaledCore
+
+  const observedStrength = Math.max(-0.80, Math.min(oppAdjustedCap, rawStrength))
+
+  // Confidence: limited so the prior (S) carries real weight vs any single game.
+  const confidence = Math.min(0.80, 0.58 + Math.abs(marginFactor) * 0.10 + Math.abs(result.opponentStrength) * 0.05)
+
+  // noiseVariance raised vs earlier version → lower Kalman gain → S moves less per game.
+  // This is intentional: one game is weak evidence; the full season is strong evidence.
+  const noiseVariance = result.primetime ? 0.30 : 0.42
 
   return {
     id: obsId('game_result'),
     source: 'game_result',
     observedStrength,
-    confidence: Math.min(0.85, confidence),
+    confidence,
     noiseVariance,
     recencyWeight: 1.0,
     directionality: result.win ? 1 : -1,
@@ -58,6 +82,8 @@ export function gameResultObservation(result: GameResult, ts: number): Observati
       score: `${result.pointsScored}-${result.pointsAllowed}`,
       margin: result.margin,
       opponentScale: +opponentScale.toFixed(3),
+      garbageDampen,
+      oppAdjustedCap: +oppAdjustedCap.toFixed(3),
       coreSignal: +coreSignal.toFixed(4),
     },
     provenance: `NYG vs ${result.opponent} W${result.week} 2025`,
@@ -84,8 +110,11 @@ export function injuryObservation(injury: InjuryReport): Observation {
     id: obsId('injury_shock'),
     source: 'injury_shock',
     observedStrength: Math.max(-1.0, observedStrength),
-    confidence: 0.85,
-    noiseVariance: 0.15,
+    // Injury reports are noisy: severity is uncertain, backup quality is unknown,
+    // recovery timelines shift. High noiseVariance limits Kalman gain so even a
+    // major injury doesn't produce a catastrophic single-update S swing.
+    confidence: injury.impactWeight > 0.60 ? 0.75 : 0.65,
+    noiseVariance: 0.55,
     recencyWeight: 1.0,
     directionality: -1,
     decayWindowDays: 14,
