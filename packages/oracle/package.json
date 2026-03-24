@@ -1,0 +1,1 @@
+{"name":"@prophet/oracle","version":"0.1.0","type":"module","scripts":{"demo":"node --experimental-strip-types src/demo.ts"}}

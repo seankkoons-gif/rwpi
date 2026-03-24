@@ -1,0 +1,13 @@
+{
+  "name": "prophet-rwp",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "demo": "npx tsx packages/oracle/src/demo.ts",
+    "dev:dashboard": "cd apps/dashboard && npm run dev"
+  },
+  "devDependencies": {
+    "tsx": "^4.21.0",
+    "typescript": "^5.4.0"
+  }
+}
