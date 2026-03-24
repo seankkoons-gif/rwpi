@@ -1,0 +1,39 @@
+{
+  "capturedAt": "2026-03-24T12:00:00Z",
+  "oracleVersion": "1.0.0",
+  "state": {
+    "S": -0.2039,
+    "V": 0.3008,
+    "U": 0.5484,
+    "fairPrice": 88.57,
+    "markPrice": 88.90,
+    "fundingRate": 0.078,
+    "season": "2025",
+    "record": "4-13",
+    "headCoach": "John Harbaugh"
+  },
+  "context": {
+    "teamId": "nyg",
+    "teamName": "New York Giants",
+    "seasonPhase": "offseason",
+    "launchPrice": 100.00,
+    "launchS": -0.15,
+    "launchV": 0.60,
+    "offseasonEvents": [
+      "Brian Daboll fired (Jan 2026)",
+      "John Harbaugh hired as HC (Jan 14, 2026)",
+      "Jason Sanders signed at K (Feb 2026)",
+      "FA OL additions",
+      "Holds #7 overall pick in 2026 draft"
+    ],
+    "season2025Summary": {
+      "wins": 4,
+      "losses": 13,
+      "pointsScored": 381,
+      "pointsAllowed": 439,
+      "pointDifferential": -58,
+      "divisionFinish": "4th NFC East"
+    },
+    "kalmanDescription": "S=-0.204 reflects 4-13 season performance through 17 games + Harbaugh offseason transition. V=0.301 represents real offseason uncertainty (regime change). U=0.548 places the team in 'elevated' risk regime."
+  }
+}

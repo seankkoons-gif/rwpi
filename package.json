@@ -4,7 +4,13 @@
   "private": true,
   "scripts": {
     "demo": "npx tsx packages/oracle/src/demo.ts",
-    "dev:dashboard": "cd apps/dashboard && npm run dev"
+    "dev:dashboard": "cd apps/dashboard && npm run dev",
+    "oracle:benchmark": "node --experimental-strip-types packages/oracle/src/cli/benchmark.ts",
+    "oracle:benchmark:giants": "node --experimental-strip-types packages/oracle/src/cli/benchmark.ts --giants",
+    "oracle:calibrate": "node --experimental-strip-types packages/oracle/src/cli/calibrate.ts",
+    "oracle:calibrate:quick": "node --experimental-strip-types packages/oracle/src/cli/calibrate.ts --mode quick",
+    "oracle:calibrate:full": "node --experimental-strip-types packages/oracle/src/cli/calibrate.ts --mode full",
+    "oracle:report:giants": "node --experimental-strip-types packages/oracle/src/cli/benchmark.ts --report giants"
   },
   "devDependencies": {
     "tsx": "^4.21.0",
