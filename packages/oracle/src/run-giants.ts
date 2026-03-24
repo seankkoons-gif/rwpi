@@ -1,5 +1,12 @@
 import type { StateSnapshot } from '../../shared/src/types.ts'
-import { GIANTS_CONFIG, applyObservations, buildOraclePrice, applyOffseasonTransition } from './oracle.ts'
+import {
+  GIANTS_CONFIG,
+  applyObservations,
+  applyObservationsSplit,
+  applyOffseasonTransitionSplit,
+  buildOraclePrice,
+  calcCombinedS,
+} from './oracle.ts'
 import { gameResultObservation, injuryObservation, sentimentObservation, oddsObservation, projectionObservation } from './observations.ts'
 import { buildMarketState } from './market-engine.ts'
 import {
@@ -18,9 +25,10 @@ const DAY_MS = 24 * 60 * 60 * 1000
 export function runGiantsSimulation(): StateSnapshot[] {
   const snapshots: StateSnapshot[] = []
 
-  // Launch state: Giants enter 2025 as a below-average team
-  let S = GIANTS_CONFIG.launchS   // -0.15
-  let V = GIANTS_CONFIG.launchV   // 0.60
+  // Launch state: Giants enter 2025 with split S_q / S_o components
+  let S_q = GIANTS_CONFIG.launchSq   // -0.20 (current quality: below-avg roster)
+  let S_o = GIANTS_CONFIG.launchSo   // +0.067 (forward optionality: new season upside)
+  let V = GIANTS_CONFIG.launchV      // 0.60
   let lastMark: number | null = null
   let longOI = 500_000
   let shortOI = 500_000
@@ -34,38 +42,42 @@ export function runGiantsSimulation(): StateSnapshot[] {
 
     const observations = []
 
-    // Game result
+    // Game result (current_quality)
     observations.push(gameResultObservation(game, gameTs))
 
-    // Injuries near this week (±4 days)
+    // Injuries near this week (±4 days) — current_quality
     for (const inj of GIANTS_2025_INJURIES) {
       if (Math.abs(inj.timestamp - gameTs) < 4 * DAY_MS) {
         observations.push(injuryObservation(inj))
       }
     }
 
-    // Sentiment near this week (±4 days)
+    // Sentiment near this week (±4 days) — combined
     for (const snap of GIANTS_2025_SENTIMENT) {
       if (Math.abs(snap.timestamp - gameTs) < 4 * DAY_MS) {
         observations.push(sentimentObservation(snap))
       }
     }
 
-    // Market odds near this week (±4 days)
+    // Market odds near this week (±4 days) — current_quality
     for (const odds of GIANTS_2025_ODDS) {
       if (Math.abs(odds.timestamp - gameTs) < 4 * DAY_MS) {
         observations.push(oddsObservation(odds.impliedWinProb, odds.timestamp))
       }
     }
 
-    const { S: S_new, V: V_new, attributions } = applyObservations(S, V, observations, GIANTS_CONFIG, daysSince)
-    S = S_new
+    const { S_q: Sq_new, S_o: So_new, V: V_new, attributions } =
+      applyObservationsSplit(S_q, S_o, V, observations, GIANTS_CONFIG, daysSince)
+    S_q = Sq_new
+    S_o = So_new
     V = V_new
+
+    const combinedS = calcCombinedS(S_q, S_o, GIANTS_CONFIG)
     const U = Math.sqrt(V)
 
     const teamState = {
       teamId: 'nyg', teamName: 'New York Giants',
-      S, V, U, timestamp: gameTs, seasonPhase: 'regular' as const,
+      S: combinedS, V, U, timestamp: gameTs, seasonPhase: 'regular' as const,
     }
     const oraclePrice = buildOraclePrice(teamState, lastMark, GIANTS_CONFIG)
     lastMark = oraclePrice.markPrice
@@ -90,7 +102,7 @@ export function runGiantsSimulation(): StateSnapshot[] {
 
     snapshots.push({
       timestamp: gameTs,
-      S, V, U,
+      S: combinedS, V, U,
       price: oraclePrice.fairPrice,
       markPrice: oraclePrice.markPrice,
       fundingRate: marketState.fundingRate,
@@ -108,44 +120,41 @@ export function runGiantsSimulation(): StateSnapshot[] {
     })
   }
 
-  // S/V at end of 2025 regular season
-  const S_end2025 = S
+  // S_q / S_o / V at end of 2025 regular season
+  const S_q_end2025 = S_q
+  const S_o_end2025 = S_o
   const V_end2025 = V
-  const endOfSeasonTs = SEASON_START_2025 + 16 * WEEK_MS  // ~Jan 2, 2026
 
-  // ─── March 24, 2026 offseason transition ────────────────────────────────────
-  // Apply: coaching reset (John Harbaugh), roster FA moves, sentiment, offseason decay
+  // ─── March 24, 2026 offseason transition (split version) ────────────────────
   const mar24Ts = new Date('2026-03-24T12:00:00Z').getTime()
 
-  const { S: S_mar26, V: V_mar26, attributions: offAttr } = applyOffseasonTransition(
-    S_end2025,
-    V_end2025,
-    {
-      coachingChange: {
-        fromCoach: MARCH_2026_TRANSITION.coachingChange.fromCoach,
-        toCoach: MARCH_2026_TRANSITION.coachingChange.toCoach,
-        qualitySignal: MARCH_2026_TRANSITION.coachingChange.qualitySignal,
-        confidence: MARCH_2026_TRANSITION.coachingChange.confidence,
-        varianceAddition: MARCH_2026_TRANSITION.coachingChange.varianceAddition,
+  const { S_q: S_q_mar26, S_o: S_o_mar26, V: V_mar26, attributions: offAttr } =
+    applyOffseasonTransitionSplit(
+      S_q_end2025,
+      S_o_end2025,
+      V_end2025,
+      {
+        coachingChange: {
+          fromCoach: MARCH_2026_TRANSITION.coachingChange.fromCoach,
+          toCoach: MARCH_2026_TRANSITION.coachingChange.toCoach,
+          qualitySignal: MARCH_2026_TRANSITION.coachingChange.qualitySignal,
+          confidence: MARCH_2026_TRANSITION.coachingChange.confidence,
+          varianceAddition: MARCH_2026_TRANSITION.coachingChange.varianceAddition,
+        },
+        rosterMoves: MARCH_2026_TRANSITION.rosterMoves,
+        sentimentPost: MARCH_2026_TRANSITION.sentimentPost,
+        daysFromSeasonEndToNow: MARCH_2026_TRANSITION.daysFromSeasonEndToMar24,
       },
-      rosterMoves: MARCH_2026_TRANSITION.rosterMoves,
-      sentimentPost: MARCH_2026_TRANSITION.sentimentPost,
-      daysFromSeasonEndToNow: MARCH_2026_TRANSITION.daysFromSeasonEndToMar24,
-    },
-    GIANTS_CONFIG,
-  )
+      GIANTS_CONFIG,
+    )
 
   // ─── 2026 forward-looking projections ───────────────────────────────────────
-  // Composite all projections into a SINGLE Kalman update to prevent 6 independent
-  // observations from compounding at high V.
-  //
-  // Rationale: Vegas, analytics, and coaching-trajectory models are all drawing from
-  // overlapping information (opponent history, roster moves, coaching pedigree).
-  // Treating them as independent would double- or triple-count the same signal.
-  // The composite approach: weighted average z + cross-projection spread → noiseVariance.
-  // Result: projections nudge S by ~0.02–0.05, not 0.10+.
-  let S_proj = S_mar26
+  // Composite all projections into a SINGLE Kalman update (forward_optionality component)
+  // to prevent 6 independent observations from compounding at high V.
+  let S_q_proj = S_q_mar26
+  let S_o_proj = S_o_mar26
   let V_proj = V_mar26
+
   if (GIANTS_2026_PROJECTIONS.length > 0) {
     const projObs = GIANTS_2026_PROJECTIONS.map(projectionObservation)
 
@@ -160,10 +169,11 @@ export function runGiantsSimulation(): StateSnapshot[] {
     const spread = maxZ - minZ
     const compositeNV = Math.max(0.80, 0.60 + spread * 0.60)
 
-    // Build one composite observation that represents the full projection consensus
+    // Build one composite observation (forward_optionality) for the full projection consensus
     const compositeObs = [{
       id: 'proj-composite-2026',
       source: 'projection_signal' as const,
+      component: 'forward_optionality' as const,
       observedStrength: avgZ,
       confidence: avgConf,
       noiseVariance: compositeNV,
@@ -175,14 +185,17 @@ export function runGiantsSimulation(): StateSnapshot[] {
       provenance: `Composite 2026 projection (n=${projObs.length}): avgZ=${avgZ.toFixed(3)}, spread=${spread.toFixed(3)}`,
     }]
 
-    const { S: Sp, V: Vp } = applyObservations(S_mar26, V_mar26, compositeObs, GIANTS_CONFIG, 0)
-    S_proj = Sp
-    V_proj = Vp
+    const result = applyObservationsSplit(S_q_mar26, S_o_mar26, V_mar26, compositeObs, GIANTS_CONFIG, 0)
+    S_q_proj = result.S_q
+    S_o_proj = result.S_o
+    V_proj = result.V
   }
 
-  const U_mar26 = Math.sqrt(V_proj)
-  const S_final = S_proj
+  const S_final_q = S_q_proj
+  const S_final_o = S_o_proj
   const V_final = V_proj
+  const S_final = calcCombinedS(S_final_q, S_final_o, GIANTS_CONFIG)
+  const U_mar26 = Math.sqrt(V_final)
 
   const mar26TeamState = {
     teamId: 'nyg', teamName: 'New York Giants',
@@ -195,6 +208,8 @@ export function runGiantsSimulation(): StateSnapshot[] {
   snapshots.push({
     timestamp: mar24Ts,
     S: S_final, V: V_final, U: U_mar26,
+    S_q: S_final_q,
+    S_o: S_final_o,
     price: mar26Price.fairPrice,
     markPrice: mar26Price.markPrice,
     fundingRate: mar26Market.fundingRate,
@@ -207,14 +222,13 @@ export function runGiantsSimulation(): StateSnapshot[] {
       injuries: snapshots.reduce((a, s) => a + (s.attributions?.injuries ?? 0), 0),
       sentiment: snapshots.reduce((a, s) => a + (s.attributions?.sentiment ?? 0), 0),
       // Offseason:
-      offseasonDecay: offAttr['offseason_decay'] ?? 0,
-      coachingReset: offAttr['coaching_reset'] ?? 0,
-      rosterMoves: offAttr['roster_moves'] ?? 0,
-      sentimentNarrative: offAttr['sentiment_narrative'] ?? 0,
-      // Projection nudge (sum of all projection_signal attributions):
-      projectionNudge: S_proj - S_mar26,
-      // Point differential drag (informational, not Kalman-derived):
-      pointDifferentialDrag: -0.058,  // anchored to 2025's -58 pd / 1000 as normalized signal
+      offseasonCarry: offAttr['offseason_decay'] ?? 0,
+      rosterCoaching: (offAttr['coaching_reset'] ?? 0) + (offAttr['roster_moves'] ?? 0),
+      // Projection nudge (S_o delta from projections):
+      projectionNudge: S_o_proj - S_o_mar26,
+      // Three-component deltas:
+      currentQualityDelta: S_final_q - GIANTS_CONFIG.launchSq,
+      forwardOptionalityDelta: S_final_o - GIANTS_CONFIG.launchSo,
     },
   })
 

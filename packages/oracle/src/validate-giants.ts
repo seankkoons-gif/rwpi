@@ -39,8 +39,9 @@
  *    even bad play can be above the prior for a weak team. Tests verify bounds.
  */
 
-import { GIANTS_CONFIG, calcFairPrice, applyObservations, applyOffseasonTransition } from './oracle.ts'
-import { gameResultObservation, injuryObservation } from './observations.ts'
+import { GIANTS_CONFIG, calcFairPrice, applyObservations, applyOffseasonTransition, calcCombinedS, applyObservationsSplit, applyOffseasonTransitionSplit } from './oracle.ts'
+import { gameResultObservation, injuryObservation, projectionObservation } from './observations.ts'
+import { runGiantsSimulation } from './run-giants.ts'
 import { calcRiskRegime } from './market-engine.ts'
 import { advanceVRisk, getNewPositionV, smoothingProfile } from './risk/covariance-smoother.ts'
 import { compareSmoothing } from './risk/risk-engine.ts'
@@ -623,6 +624,149 @@ console.log('──────────────────────�
       v90BelowPre:        { min: 1, label: 'V_risk below V_pre at t=90min (converging)' },
     }, 'After blowout loss, leverage cap jump from 5x→10x delayed — prevents immediate over-leveraging')
   }
+}
+
+// ─── Suite 8: THREE-COMPONENT STATE COHERENCE ────────────────────────────────
+console.log('\nSuite 8: THREE-COMPONENT STATE COHERENCE')
+console.log('─────────────────────────────────────────')
+
+{
+  // S8-1: Game observation (current_quality) updates S_q, leaves S_o unchanged.
+  const game: GameResult = {
+    week: 8, season: 2025, opponent: 'Test', home: true,
+    pointsScored: 28, pointsAllowed: 14, win: true, margin: 14,
+    offensiveYards: 340, defensiveYards: 260, turnovers: 0, sacks: 3,
+    thirdDownPct: 0.44, redZonePct: 0.67, timeOfPossession: 31.0,
+    penaltyYards: 40, specialTeamsScore: 0, kickingFGPct: 1.0,
+    returnYards: 90, explosivePlays: 4, opponentStrength: 0.0,
+    restDays: 7, primetime: false,
+  }
+  const obs = [gameResultObservation(game, NOW)]
+  const S_q0 = -0.21; const S_o0 = 0.08
+  const { S_q, S_o } = applyObservationsSplit(S_q0, S_o0, 0.12, obs, cfg, 7)
+  const deltaSq = Math.abs(S_q - S_q0)
+  const deltaSo = Math.abs(S_o - S_o0)
+  test('ThreeComponent', 'S8-1: Game obs (current_quality) updates S_q, not S_o', { deltaSq, deltaSo }, {
+    deltaSq: { min: 0.005, label: '|ΔS_q| meaningful from game result' },
+    deltaSo: { max: 0.001, label: '|ΔS_o| = 0 (game obs does not touch S_o)' },
+  }, 'gameResultObservation has component=current_quality; S_o must be completely unchanged')
+}
+
+{
+  // S8-2: Coaching change (via applyOffseasonTransitionSplit) updates S_o, not S_q.
+  // Use strong signal + high V to ensure ΔS_o > 0.05 is detectable.
+  const S_q0 = -0.26; const S_o0 = 0.00; const V0 = 0.60
+  const before_q = S_q0; const before_o = S_o0
+  const result = applyOffseasonTransitionSplit(S_q0, S_o0, V0, {
+    daysFromSeasonEndToNow: 0,   // no time decay, isolate coaching signal
+    coachingChange: { fromCoach: 'X', toCoach: 'Y', qualitySignal: 0.50, confidence: 0.80, varianceAddition: 0.16 },
+    rosterMoves: [],
+  }, cfg)
+  const deltaSo = result.S_o - before_o
+  const deltaSq = Math.abs(result.S_q - before_q)
+  test('ThreeComponent', 'S8-2: Coaching change updates S_o only (not S_q)', { deltaSo, deltaSq }, {
+    deltaSo: { min: 0.05, label: 'ΔS_o > 0.05 — coaching meaningfully raises forward optionality' },
+    deltaSq: { max: 0.001, label: '|ΔS_q| ≈ 0 — coaching does not touch current quality component' },
+  }, 'HC hire improves OPTIONALITY, not immediate quality. S_q must be unchanged.')
+}
+
+{
+  // S8-3: Projection observation (forward_optionality) updates S_o, not S_q.
+  // Use a positive projection so ΔS_o > 0.001.
+  const proj = {
+    kind: 'analytics' as const,
+    projectedS: 0.10,    // positive forward signal
+    confidence: 0.55,
+    horizonDays: 180,
+    timestamp: NOW,
+    provenance: 'S8-3 test: positive projection',
+  }
+  const obs = [projectionObservation(proj)]
+  const S_q0 = -0.21; const S_o0 = 0.00
+  const { S_q, S_o } = applyObservationsSplit(S_q0, S_o0, 0.12, obs, cfg, 0)
+  const deltaSo = S_o - S_o0
+  const deltaSq = Math.abs(S_q - S_q0)
+  test('ThreeComponent', 'S8-3: Projection obs (forward_optionality) updates S_o, not S_q', { deltaSo, deltaSq }, {
+    deltaSo: { min: 0.001, label: 'ΔS_o > 0.001 from positive projection' },
+    deltaSq: { max: 0.001, label: '|ΔS_q| = 0 (projection does not touch current quality)' },
+  }, 'projectionObservation has component=forward_optionality; S_q must be completely unchanged')
+}
+
+{
+  // S8-4: calcCombinedS correctly computes S_q + λ × S_o.
+  const combined = calcCombinedS(-0.28, 0.09, cfg)
+  const expected = -0.28 + cfg.optionalityDiscount * 0.09   // = -0.2125
+  const diff = Math.abs(combined - expected)
+  test('ThreeComponent', 'S8-4: calcCombinedS(-0.28, 0.09, cfg) ≈ -0.2125 (= S_q + λ × S_o)', { combined, diff }, {
+    combined: { min: -0.215, max: -0.210, label: 'Combined S in expected range [-0.215, -0.210]' },
+    diff:     { max: 0.0001, label: 'Formula precision: |computed - expected| < 0.0001' },
+  }, '-0.28 + 0.75 × 0.09 = -0.2125. Verifies optionalityDiscount=0.75 is correctly applied.')
+}
+
+{
+  // S8-5: Pricing via combined S matches expected range.
+  const combined = calcCombinedS(-0.28, 0.09, cfg)
+  const V = 0.3008
+  const price = calcFairPrice(combined, V, cfg)
+  test('ThreeComponent', 'S8-5: calcFairPrice(combinedS, V, cfg) lands in [$85, $90]', { price }, {
+    price: { min: 85, max: 90, label: 'Fair price in [$85, $90] for S_combined ≈ -0.2125, V=0.3008' },
+  }, 'Three-component pricing produces same result as single-S pricing for same combinedS')
+}
+
+{
+  // S8-6: Injury observation (current_quality) hits S_q, not S_o.
+  const inj: InjuryReport = {
+    playerId: 'test-dt', playerName: 'Dexter Lawrence', position: 'DT',
+    status: 'out', impactWeight: 0.60, timestamp: NOW,
+  }
+  const obs = [injuryObservation(inj)]
+  const S_q0 = -0.21; const S_o0 = 0.08
+  const { S_q, S_o } = applyObservationsSplit(S_q0, S_o0, 0.355, obs, cfg, 0)
+  const deltaSq = S_q - S_q0
+  const deltaSo = Math.abs(S_o - S_o0)
+  test('ThreeComponent', 'S8-6: Injury (current_quality) moves S_q negative, S_o unchanged', { deltaSq, deltaSo }, {
+    deltaSq: { min: -0.22, max: -0.01, label: 'ΔS_q < 0 from injury (current quality reduced)' },
+    deltaSo: { max: 0.001, label: '|ΔS_o| = 0 (injury does not touch forward optionality)' },
+  }, 'injuryObservation has component=current_quality; S_o must be completely unchanged')
+}
+
+{
+  // S8-7: Full Giants March 24, 2026 simulation produces valid split state.
+  const snapshots = runGiantsSimulation()
+  const final = snapshots[snapshots.length - 1]
+  const S_q = final.S_q ?? NaN
+  const S_o = final.S_o ?? NaN
+  const S_combined = final.S
+  test('ThreeComponent', 'S8-7: Giants March 2026 — S_q negative, S_o positive, combined in valid band', {
+    S_q, S_o, S_combined,
+  }, {
+    S_q:        { min: -0.45, max: -0.10, label: 'S_q ∈ [-0.45, -0.10]: 4-13 season damage in current quality' },
+    S_o:        { min: -0.05, max: 0.25,  label: 'S_o ∈ [-0.05, 0.25]: Harbaugh + FA + draft should be positive or modest' },
+    S_combined: { min: -0.32, max: -0.10, label: 'S_combined ∈ [-0.32, -0.10]: plausible for a rebuilding Giants' },
+  }, 'Run full simulation; three-component state must be internally consistent and numerically plausible')
+}
+
+{
+  // S8-8: Optionality discount (λ < 1) — same S_o uplift contributes less than equal S_q improvement.
+  // Team A: (S_q=-0.10, S_o=0.40) → combined = -0.10 + 0.75×0.40 = 0.20
+  // Team B: (S_q=-0.10, S_o=0.00) → combined = -0.10
+  // Price A > Price B (more optionality = higher price), but uplift is DISCOUNTED vs if λ=1
+  const V = 0.30
+  const pWithSo   = calcFairPrice(calcCombinedS(-0.10, 0.40, cfg), V, cfg)
+  const pWithoutSo = calcFairPrice(calcCombinedS(-0.10, 0.00, cfg), V, cfg)
+  const upliftActual = pWithSo - pWithoutSo
+
+  // What the uplift would be if S_o counted as fully as S_q (treat as extra S_q = 0.40):
+  const pFullLambda = calcFairPrice(calcCombinedS(-0.10 + 0.40, 0.00, cfg), V, cfg)
+  const upliftFull  = pFullLambda - pWithoutSo
+
+  test('ThreeComponent', 'S8-8: Optionality discount — S_o uplift is real but less than equivalent S_q gain', {
+    upliftActual, upliftFull, priceHigherWithSo: pWithSo > pWithoutSo ? 1 : 0, discountApplied: upliftActual < upliftFull ? 1 : 0,
+  }, {
+    priceHigherWithSo: { min: 1,   label: 'More S_o = higher price (positive optionality has value)' },
+    upliftActual:      { min: 1.0, label: 'S_o=0.40 vs S_o=0.00 price diff is at least $1' },
+    discountApplied:   { min: 1,   label: 'Actual uplift < full-lambda uplift (λ=0.75 discounts optionality)' },
+  }, 'λ < 1 means unproven optionality adds less price than proven on-field quality of equal magnitude')
 }
 
 // ─── Results ──────────────────────────────────────────────────────────────────

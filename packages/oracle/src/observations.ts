@@ -73,6 +73,7 @@ export function gameResultObservation(result: GameResult, ts: number): Observati
   return {
     id: obsId('game_result'),
     source: 'game_result',
+    component: 'current_quality' as const,
     observedStrength,
     confidence,
     noiseVariance,
@@ -113,6 +114,7 @@ export function injuryObservation(injury: InjuryReport): Observation {
   return {
     id: obsId('injury_shock'),
     source: 'injury_shock',
+    component: 'current_quality' as const,
     observedStrength: Math.max(-1.0, observedStrength),
     // Injury reports are noisy: severity is uncertain, backup quality is unknown,
     // recovery timelines shift. High noiseVariance limits Kalman gain so even a
@@ -157,6 +159,7 @@ export function sentimentObservation(snap: SentimentSnapshot): Observation {
   return {
     id: obsId('sentiment'),
     source: 'sentiment',
+    component: 'current_quality' as const,  // in-season sentiment reflects present quality perception; offseason sentiment handles forward optionality separately
     observedStrength,
     confidence,
     noiseVariance: 0.25 + snap.dispersion * 0.15,
@@ -192,6 +195,7 @@ export function oddsObservation(impliedWinProb: number, ts: number): Observation
   return {
     id: obsId('market_odds'),
     source: 'market_odds',
+    component: 'current_quality' as const,  // market odds reflect present team quality
     observedStrength,
     confidence: 0.70,
     noiseVariance: 0.20,
@@ -269,6 +273,7 @@ export function projectionObservation(proj: ProjectionReport): Observation {
   return {
     id: obsId('projection_signal'),
     source: 'projection_signal',
+    component: 'forward_optionality' as const,  // forward-looking projections update future upside
     observedStrength,
     confidence: proj.confidence,
     noiseVariance,

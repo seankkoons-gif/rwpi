@@ -1,5 +1,5 @@
 import { runGiantsSimulation } from './run-giants.ts'
-import { GIANTS_CONFIG } from './oracle.ts'
+import { GIANTS_CONFIG, calcCombinedS } from './oracle.ts'
 import { calcLiquidation } from './market-engine.ts'
 import type { Position } from '../../shared/src/types.ts'
 
@@ -30,7 +30,20 @@ const changePct = ((current.markPrice - GIANTS_CONFIG.launchPrice) / GIANTS_CONF
 const changeSign = changePct >= 0 ? '+' : ''
 console.log(`│  Change from Launch: ${(changeSign + changePct.toFixed(1) + '%').padEnd(12)}                              │`)
 console.log('│                                                              │')
-console.log(`│  Latent Strength S:  ${fmt(current.S, 4).padEnd(12)}(neg = below avg)          │`)
+// Three-component state (present on the final offseason snapshot)
+if (current.S_q !== undefined && current.S_o !== undefined) {
+  const Sq = current.S_q
+  const So = current.S_o
+  const combinedS = calcCombinedS(Sq, So, GIANTS_CONFIG)
+  const sqSign = Sq >= 0 ? '+' : ''
+  const soSign = So >= 0 ? '+' : ''
+  const csSign = combinedS >= 0 ? '+' : ''
+  console.log(`│  Current Quality S_q:${(sqSign + fmt(Sq, 4)).padEnd(11)} (on-field: 4-13 season, injuries)   │`)
+  console.log(`│  Fwd Optionality S_o:${(soSign + fmt(So, 4)).padEnd(11)} (Harbaugh hire, FA, draft capital)  │`)
+  console.log(`│  Combined S:         ${(csSign + fmt(combinedS, 4)).padEnd(11)} (S_q + 0.75 × S_o)              │`)
+} else {
+  console.log(`│  Latent Strength S:  ${fmt(current.S, 4).padEnd(12)}(neg = below avg)          │`)
+}
 console.log(`│  Variance V:         ${fmt(current.V, 4).padEnd(12)}                              │`)
 console.log(`│  Uncertainty U:      ${fmt(current.U, 4).padEnd(12)}(σ of latent state)        │`)
 console.log(`│  Season Phase:       ${current.seasonPhase.toUpperCase().padEnd(12)}                              │`)

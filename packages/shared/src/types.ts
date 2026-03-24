@@ -71,6 +71,17 @@ export interface Observation {
   timestamp: number
   metadata: Record<string, unknown>
   provenance?: string
+  /** Which latent-state component this observation updates. */
+  component: 'current_quality' | 'forward_optionality' | 'combined'
+}
+
+/** Three-component latent state (S_q + λ×S_o + V). */
+export interface ThreeComponentState {
+  currentQuality: number      // S_q: on-field proven performance
+  forwardOptionality: number  // S_o: unproven future upside
+  combinedS: number           // S_q + λ × S_o
+  variance: number            // V (shared)
+  uncertainty: number         // sqrt(V)
 }
 
 export interface MarketState {
@@ -175,7 +186,9 @@ export interface AttributionBreakdown {
   scheduleStrength: number
   specialTeams: number
   offseasonCarry: number
-  projectionNudge: number   // forward-looking projection observations (weak signal)
+  projectionNudge: number         // forward-looking projection observations (weak signal)
+  currentQualityDelta?: number    // total ΔS_q this period
+  forwardOptionalityDelta?: number // total ΔS_o this period
   total: number
 }
 
@@ -193,4 +206,7 @@ export interface StateSnapshot {
   event?: string
   week?: number
   attributions?: Partial<AttributionBreakdown>
+  /** Three-component split state (present on the final offseason snapshot). */
+  S_q?: number
+  S_o?: number
 }
