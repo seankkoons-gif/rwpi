@@ -377,6 +377,50 @@ export const SENTIMENT_SNAPSHOTS = SENTIMENTS.map(s => ({
   dispersion: s.disp,
 }))
 
+// ── Three-component state decomposition ──────────────────────────────────────
+// S = S_q + λ × S_o  (combined latent state)
+export const S_q = -0.2625       // Current Quality (backward-looking: 4-13 record, injuries, odds)
+export const S_o = 0.0690        // Forward Optionality (Harbaugh, FA, draft capital, projections)
+export const LAMBDA = 0.75       // Optionality discount (S_o unproven on-field → 25% haircut)
+export const COMBINED_S = S_q + LAMBDA * S_o  // = -0.2108
+
+// ── Attribution by component ──────────────────────────────────────────────────
+export const ATTRIBUTION_BY_COMPONENT = {
+  currentQuality: {
+    gamePerformance: -0.0788,    // 4-13 season game damage to S_q
+    injuries: -0.0312,           // Dexter Lawrence, Schmitz injury impact on S_q
+    marketOdds: -0.0215,         // odds-implied S_q drag
+    pointDiffDrag: -0.0580,      // -58 point differential
+  },
+  forwardOptionality: {
+    harbaughHire: +0.0720,       // John Harbaugh coaching uplift to S_o
+    rosterFA: +0.0215,           // Jason Sanders + OL + CB FA
+    draftCapital: +0.0225,       // #7 overall pick option value
+    projections: +0.0158,        // analytics/Vegas consensus projection
+    sentimentNarrative: -0.0118, // skeptical national media drag on S_o
+  },
+  uncertainty: {
+    offseasonGap: 'V expanding 0.002/day × 81 days',
+    regimeChange: 'Harbaugh hire added +0.16 variance shock',
+    noFreshGames: 'No in-season observations since Jan 2026',
+  },
+}
+
+// ── State waterfall (bridge chart data) ──────────────────────────────────────
+export const STATE_WATERFALL = [
+  { label: 'Franchise baseline', sq: -0.15, so: 0.067, delta: 0, component: 'baseline', note: 'Sep 5, 2025 launch' },
+  { label: '2025 season losses', sq: -0.079, so: 0, delta: -0.079, component: 'sq', note: '13 losses accumulate in S_q' },
+  { label: 'Point diff drag', sq: -0.058, so: 0, delta: -0.058, component: 'sq', note: '-58 PD reinforces quality signal' },
+  { label: 'Injuries (DL, OC)', sq: -0.031, so: 0, delta: -0.031, component: 'sq', note: 'Dexter Lawrence IR, Schmitz out' },
+  { label: 'Market odds drag', sq: -0.022, so: 0, delta: -0.022, component: 'sq', note: 'Season-long implied win prob decline' },
+  { label: 'Harbaugh hire', sq: 0, so: +0.072, delta: +0.072, component: 'so', note: 'Routes to S_o not S_q (unproven)' },
+  { label: 'FA + roster moves', sq: 0, so: +0.022, delta: +0.022, component: 'so', note: 'Sanders, OL, CB depth' },
+  { label: 'Draft capital (#7)', sq: 0, so: +0.023, delta: +0.023, component: 'so', note: 'Top-10 pick option value' },
+  { label: 'Analytics projections', sq: 0, so: +0.016, delta: +0.016, component: 'so', note: 'Vegas 7.5w, FPI 7.4w consensus' },
+  { label: 'Optionality discount', sq: 0, so: 0, delta: -0.033, component: 'lambda', note: 'λ=0.75 discounts S_o by 25%' },
+  { label: 'Final combined S', sq: 0, so: 0, delta: 0, component: 'result', note: 'S_combined = -0.211' },
+]
+
 // ── Current offseason state (for Risk/Overview tabs) ─────────────────────────
 export const OFFSEASON_STATE = {
   currentDate: CURRENT_DATE_LABEL,
@@ -390,4 +434,9 @@ export const OFFSEASON_STATE = {
   markPrice: CURRENT_STATE.markPrice,
   fundingRate: CURRENT_STATE.fundingRate,
   riskRegime: CURRENT_STATE.U < 0.4 ? 'CALM' : CURRENT_STATE.U < 0.7 ? 'ELEVATED' : CURRENT_STATE.U < 1.0 ? 'STRESSED' : 'CRISIS',
+  // Three-component decomposition
+  S_q,
+  S_o,
+  LAMBDA,
+  combinedS: COMBINED_S,
 }

@@ -3,6 +3,8 @@ import { CURRENT_STATE, LAUNCH_CONFIG } from './data/simulation'
 import OverviewTab from './components/OverviewTab'
 import PriceStateTab from './components/PriceStateTab'
 import AttributionTab from './components/AttributionTab'
+import StateAttributionTab from './components/StateAttributionTab'
+import CounterfactualPanel from './components/CounterfactualPanel'
 import PerformanceTab from './components/PerformanceTab'
 import SentimentTab from './components/SentimentTab'
 import RiskTab from './components/RiskTab'
@@ -16,6 +18,7 @@ const C = {
 
 const TABS = [
   'Overview', 'Price & State', 'Attribution',
+  'State Attribution', 'Counterfactuals',
   'Performance', 'Sentiment', 'Risk & Mechanics', 'Methodology',
 ]
 
@@ -87,10 +90,12 @@ export default function App() {
         {activeTab === 0 && <OverviewTab />}
         {activeTab === 1 && <PriceStateTab />}
         {activeTab === 2 && <AttributionTab />}
-        {activeTab === 3 && <PerformanceTab />}
-        {activeTab === 4 && <SentimentTab />}
-        {activeTab === 5 && <RiskTab />}
-        {activeTab === 6 && <MethodologyTab />}
+        {activeTab === 3 && <StateAttributionTab />}
+        {activeTab === 4 && <CounterfactualPanel />}
+        {activeTab === 5 && <PerformanceTab />}
+        {activeTab === 6 && <SentimentTab />}
+        {activeTab === 7 && <RiskTab />}
+        {activeTab === 8 && <MethodologyTab />}
       </div>
     </div>
   )

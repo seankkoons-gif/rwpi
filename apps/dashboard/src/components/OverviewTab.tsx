@@ -1,6 +1,7 @@
 import React from 'react'
 import { LineChart, Line, ResponsiveContainer, Tooltip } from 'recharts'
 import { GIANTS_SNAPSHOTS, CURRENT_STATE, LAUNCH_CONFIG, OFFSEASON_STATE, CURRENT_DATE_LABEL, LAST_SEASON_RECORD, CURRENT_HC } from '../data/simulation'
+import StateTriadPanel from './StateTriadPanel'
 
 const C = {
   bg: '#050a14', panel: '#0a1428', border: '#162040',
@@ -35,6 +36,9 @@ export default function OverviewTab() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
+      {/* Three-component state panel at top */}
+      <StateTriadPanel />
+
       {/* Big price */}
       <div style={{ textAlign: 'center', padding: '24px 0 8px' }}>
         <div style={{ fontSize: 13, color: C.dim, marginBottom: 8 }}>MARK PRICE</div>
