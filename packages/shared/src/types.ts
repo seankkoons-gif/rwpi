@@ -32,6 +32,32 @@ export type ObservationSource =
   | 'preseason_signal'
   | 'schedule_adjustment'
   | 'attention'
+  | 'projection_signal'
+
+// ─── Projection types ────────────────────────────────────────────────────────
+
+/** Source of a forward-looking projection. */
+export type ProjectionSourceKind =
+  | 'analytics'           // DVOA / EPA-based model forecast
+  | 'market_consensus'    // Vegas season win total
+  | 'coaching_trajectory' // Historical HC improvement curves
+  | 'roster_rating'       // PFF/relative roster grade
+  | 'draft_capital'       // Pick quality + projected positional improvement
+  | 'schedule_strength'   // SOS projection (adjusted for expected opponent strength)
+
+export interface ProjectionReport {
+  kind: ProjectionSourceKind
+  /** Projected season win total (e.g. 7.5). Converted to latent S internally. */
+  projectedWins?: number
+  /** Direct latent-strength estimate, bypasses win conversion if provided. */
+  projectedS?: number
+  /** How confident this projection source is (0–1). */
+  confidence: number
+  /** Days into the future this projection covers (used to set recencyWeight). */
+  horizonDays: number
+  timestamp: number
+  provenance: string
+}
 
 export interface Observation {
   id: string
@@ -149,6 +175,7 @@ export interface AttributionBreakdown {
   scheduleStrength: number
   specialTeams: number
   offseasonCarry: number
+  projectionNudge: number   // forward-looking projection observations (weak signal)
   total: number
 }
 

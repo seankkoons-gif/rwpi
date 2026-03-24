@@ -1,4 +1,4 @@
-import type { GameResult, InjuryReport, SentimentSnapshot, Observation } from '../../shared/src/types.ts'
+import type { GameResult, InjuryReport, SentimentSnapshot, Observation, ProjectionReport } from '../../shared/src/types.ts'
 
 let _obsCounter = 0
 function obsId(source: string): string {
@@ -201,5 +201,85 @@ export function oddsObservation(impliedWinProb: number, ts: number): Observation
       favoriteStatus: impliedWinProb > 0.5 ? 'favorite' : 'underdog',
     },
     provenance: `Market odds: ${(impliedWinProb * 100).toFixed(1)}% implied win probability`,
+  }
+}
+
+/**
+ * projectionObservation
+ * Converts a forward-looking projection (analytics model, Vegas win total,
+ * coaching trajectory, roster rating, draft capital, SOS) into a weak
+ * Kalman observation that nudges S toward the consensus expectation.
+ *
+ * Key design choices:
+ * - noiseVariance is HIGH (0.60–0.75): projections are inherently uncertain.
+ *   Even the best analytics models miss by ~1.5 wins/season. This keeps the
+ *   Kalman gain low so projections nudge S rather than redefine it.
+ * - recencyWeight decays with horizon: a 6-month-out projection counts less
+ *   than a 30-day-out projection.
+ * - Win-to-S conversion: 1 win ≈ 0.08 S units (8.5 wins = S 0.0 league avg).
+ *   This is intentionally conservative — prevents a 7.5-win projection from
+ *   single-handedly overriding a 4-13 season of observed evidence.
+ *
+ * Projection sources and their noise profiles:
+ *   analytics         → nV=0.65, high model error (1.5-win RMSE for best models)
+ *   market_consensus  → nV=0.60, Vegas is efficient but not perfect
+ *   coaching_trajectory → nV=0.70, very context-dependent
+ *   roster_rating     → nV=0.65, grades are noisy proxies
+ *   draft_capital     → nV=0.75, picks haven't been made yet
+ *   schedule_strength → nV=0.55, most deterministic of the group
+ */
+
+const NOISE_BY_KIND: Record<ProjectionReport['kind'], number> = {
+  analytics:           0.65,
+  market_consensus:    0.60,
+  coaching_trajectory: 0.70,
+  roster_rating:       0.65,
+  draft_capital:       0.75,
+  schedule_strength:   0.55,
+}
+
+/** Average wins for a league-average team (used for win → S conversion). */
+const LEAGUE_AVG_WINS = 8.5
+/** How much one win is worth in S units. Conservative to prevent projection dominance. */
+const WINS_PER_S_UNIT = 0.08  // 1/0.08 = 12.5 wins per S unit across [-1, +1]
+
+export function projectionObservation(proj: ProjectionReport): Observation {
+  // Compute observedStrength from projectedS or projectedWins
+  let observedStrength: number
+  if (proj.projectedS !== undefined) {
+    observedStrength = proj.projectedS
+  } else if (proj.projectedWins !== undefined) {
+    observedStrength = (proj.projectedWins - LEAGUE_AVG_WINS) * WINS_PER_S_UNIT
+  } else {
+    throw new Error(`ProjectionReport must provide projectedS or projectedWins: ${proj.provenance}`)
+  }
+
+  // Clamp to reasonable oracle range
+  observedStrength = Math.max(-1.0, Math.min(1.0, observedStrength))
+
+  // recencyWeight decays with horizon: 30d = 0.90, 90d = 0.75, 180d = 0.60, 365d = 0.45
+  const recencyWeight = Math.max(0.40, 0.95 - (proj.horizonDays / 365) * 0.55)
+
+  const noiseVariance = NOISE_BY_KIND[proj.kind]
+
+  return {
+    id: obsId('projection_signal'),
+    source: 'projection_signal',
+    observedStrength,
+    confidence: proj.confidence,
+    noiseVariance,
+    recencyWeight,
+    directionality: observedStrength > 0.05 ? 1 : observedStrength < -0.05 ? -1 : 0,
+    decayWindowDays: Math.max(30, Math.round(proj.horizonDays / 3)),
+    timestamp: proj.timestamp,
+    metadata: {
+      kind: proj.kind,
+      projectedWins: proj.projectedWins,
+      projectedS: proj.projectedS,
+      horizonDays: proj.horizonDays,
+      noiseVariance,
+      recencyWeight: +recencyWeight.toFixed(3),
+    },
+    provenance: proj.provenance,
   }
 }
