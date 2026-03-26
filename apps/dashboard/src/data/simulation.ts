@@ -421,6 +421,93 @@ export const STATE_WATERFALL = [
   { label: 'Final combined S', sq: 0, so: 0, delta: 0, component: 'result', note: 'S_combined = -0.211' },
 ]
 
+// ── Trading UI Data ────────────────────────────────────────────────────────────
+
+export interface OrderBookLevel {
+  price: number
+  size: number
+  total: number
+}
+
+export interface OrderBook {
+  bids: OrderBookLevel[]
+  asks: OrderBookLevel[]
+  spread: number
+}
+
+export function generateOrderBook(markPrice: number): OrderBook {
+  const levels = 10
+  // Deterministic seed per call so it refreshes with noise each interval
+  const r = (n: number) => ((Math.sin(Date.now() * 0.001 + n * 127.1) + 1) / 2)
+  const bids: OrderBookLevel[] = Array.from({ length: levels }, (_, i) => ({
+    price: +(markPrice - 0.30 * (i + 1) - r(i * 7) * 0.15).toFixed(2),
+    size: +Math.max(10, Math.round(50 + r(i * 3 + 1) * 200 - i * 15)),
+    total: 0,
+  }))
+  const asks: OrderBookLevel[] = Array.from({ length: levels }, (_, i) => ({
+    price: +(markPrice + 0.30 * (i + 1) + r(i * 5 + 2) * 0.15).toFixed(2),
+    size: +Math.max(10, Math.round(50 + r(i * 4 + 3) * 200 - i * 15)),
+    total: 0,
+  }))
+  let cumBid = 0, cumAsk = 0
+  bids.forEach(b => { cumBid += b.size; b.total = cumBid })
+  asks.forEach(a => { cumAsk += a.size; a.total = cumAsk })
+  return { bids, asks, spread: +(asks[0].price - bids[0].price).toFixed(2) }
+}
+
+export interface RecentTrade {
+  side: 'buy' | 'sell'
+  price: number
+  size: number
+  ago: string
+}
+
+export const RECENT_TRADES: RecentTrade[] = [
+  { side: 'buy',  price: 88.74, size: 42,  ago: '2s'    },
+  { side: 'sell', price: 88.71, size: 18,  ago: '5s'    },
+  { side: 'buy',  price: 88.75, size: 85,  ago: '12s'   },
+  { side: 'sell', price: 88.70, size: 33,  ago: '18s'   },
+  { side: 'buy',  price: 88.76, size: 120, ago: '27s'   },
+  { side: 'sell', price: 88.72, size: 60,  ago: '35s'   },
+  { side: 'buy',  price: 88.73, size: 25,  ago: '44s'   },
+  { side: 'sell', price: 88.69, size: 90,  ago: '58s'   },
+  { side: 'buy',  price: 88.74, size: 45,  ago: '1m 8s' },
+  { side: 'sell', price: 88.71, size: 70,  ago: '1m 20s'},
+  { side: 'buy',  price: 88.77, size: 200, ago: '1m 35s'},
+  { side: 'sell', price: 88.70, size: 55,  ago: '1m 50s'},
+  { side: 'buy',  price: 88.73, size: 30,  ago: '2m 5s' },
+  { side: 'sell', price: 88.68, size: 110, ago: '2m 22s'},
+  { side: 'buy',  price: 88.75, size: 65,  ago: '2m 40s'},
+  { side: 'sell', price: 88.71, size: 40,  ago: '3m 2s' },
+  { side: 'buy',  price: 88.74, size: 88,  ago: '3m 25s'},
+  { side: 'sell', price: 88.69, size: 22,  ago: '4m 10s'},
+  { side: 'buy',  price: 88.76, size: 145, ago: '4m 38s'},
+  { side: 'sell', price: 88.72, size: 78,  ago: '5m 0s' },
+]
+
+export interface WeeklyCandle {
+  week: string
+  open: number
+  high: number
+  low: number
+  close: number
+  volume: number
+}
+
+export const WEEKLY_CANDLES: WeeklyCandle[] = (() => {
+  const snaps = GIANTS_SNAPSHOTS
+  const seed = (n: number) => Math.abs(Math.sin(n * 127.1 + 31.7)) // deterministic pseudo-random 0..1
+  return snaps.map((s, i) => {
+    const open = i > 0 ? snaps[i - 1].markPrice : LAUNCH_CONFIG.launchPrice
+    const close = s.markPrice
+    const range = Math.abs(close - open) + 0.8
+    const high = +(Math.max(open, close) + range * 0.45 * seed(i * 3)).toFixed(2)
+    const low = +(Math.min(open, close) - range * 0.45 * seed(i * 3 + 1)).toFixed(2)
+    const volume = Math.round(80_000 + seed(i * 3 + 2) * 300_000)
+    return { week: s.label, open: +open.toFixed(2), high, low, close: +close.toFixed(2), volume }
+  })
+})()
+
 // ── Current offseason state (for Risk/Overview tabs) ─────────────────────────
 export const OFFSEASON_STATE = {
   currentDate: CURRENT_DATE_LABEL,
